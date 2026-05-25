@@ -1,0 +1,12 @@
+prometheus-bin/
+grafana/
+demo-services/
+patch/
+logs/
+__pycache__/
+.venv/
+venv/
+.git/
+node_modules/
+backend/
+frontend/

@@ -1,0 +1,34 @@
+# SHERLOCK — Prometheus Configuration
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:8001']
+        labels:
+          service: 'auth-service'
+
+  - job_name: 'checkout-service'
+    static_configs:
+      - targets: ['checkout-service:8002']
+        labels:
+          service: 'checkout-service'
+
+  - job_name: 'recommendation-service'
+    static_configs:
+      - targets: ['recommendation-service:8003']
+        labels:
+          service: 'recommendation-service'
+
+  - job_name: 'payment-service'
+    static_configs:
+      - targets: ['payment-service:8004']
+        labels:
+          service: 'payment-service'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
