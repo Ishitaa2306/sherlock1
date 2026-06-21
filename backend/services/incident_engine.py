@@ -43,7 +43,7 @@ THRESHOLDS = {
 async def _prom_query(promql: str) -> float:
     """Query Prometheus for a single instant value, safe from NaN/Inf."""
     try:
-        async with httpx.AsyncClient(timeout=3) as client:
+        async with httpx.AsyncClient(timeout=0.5) as client:
             r = await client.get(f"{PROM_URL}/api/v1/query", params={"query": promql})
             if r.status_code == 200:
                 data = r.json()

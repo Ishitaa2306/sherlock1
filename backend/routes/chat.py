@@ -4,6 +4,7 @@ Real-time, context-aware conversational SRE Copilot.
 Injects live telemetry, incident state, and metrics into every response.
 """
 import json
+import asyncio
 from fastapi import APIRouter
 from loguru import logger
 from models.schemas import ChatRequest, ChatResponse
@@ -34,22 +35,41 @@ async def _gather_live_context(active_incident: dict = None, incident_context: d
         service = active_incident.get("service", service)
 
     try:
-        # Fetch real-time metrics from Prometheus
-        err_rate = await _prom_query(
-            f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) '
-            f'/ sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100'
-        )
-        latency_p95 = await _prom_query(
-            f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket'
-            f'{{service="{service}"}}[1m])) by (le)) * 1000'
-        )
-        memory_mb = await _prom_query(
-            f'process_memory_usage_bytes{{service="{service}"}} / 1024 / 1024'
-        )
-        db_conns = await _prom_query(f'db_connections_active{{service="{service}"}}')
-        threads = await _prom_query(f'thread_pool_active{{service="{service}"}}')
-        queue_depth = await _prom_query(f'queue_depth{{service="{service}"}}')
-        cpu_pct = await _prom_query(f'process_cpu_percent{{service="{service}"}}')
+        # Define all concurrent tasks
+        tasks = {
+            "err_rate": _prom_query(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100'),
+            "latency_p95": _prom_query(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000'),
+            "memory_mb": _prom_query(f'process_memory_usage_bytes{{service="{service}"}} / 1024 / 1024'),
+            "db_conns": _prom_query(f'db_connections_active{{service="{service}"}}'),
+            "threads": _prom_query(f'thread_pool_active{{service="{service}"}}'),
+            "queue_depth": _prom_query(f'queue_depth{{service="{service}"}}'),
+            "cpu_pct": _prom_query(f'process_cpu_percent{{service="{service}"}}'),
+            "health": _get_service_health(service),
+            "recent_logs": get_logs(service=service, time_range_minutes=5, limit=10),
+            "active_alerts": get_alerts(time_range_minutes=15),
+            "recent_traces": get_traces(service=service, time_range_minutes=5, limit=5),
+        }
+        
+        # Cross-service metrics tasks
+        cross_services = ["auth-service", "checkout-service", "recommendation-service", "payment-service"]
+        for svc in cross_services:
+            if svc != service:
+                tasks[f"cross_err_{svc}"] = _prom_query(f'sum(rate(http_requests_total{{service="{svc}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{svc}"}}[1m])) * 100')
+                tasks[f"cross_lat_{svc}"] = _prom_query(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{svc}"}}[1m])) by (le)) * 1000')
+
+        # Run all concurrently
+        keys = list(tasks.keys())
+        results = await asyncio.gather(*[tasks[k] for k in keys], return_exceptions=True)
+        res_dict = {k: v for k, v in zip(keys, results) if not isinstance(v, Exception)}
+
+        # Extract values with fallbacks
+        err_rate = res_dict.get("err_rate", 0.0)
+        latency_p95 = res_dict.get("latency_p95", 0.0)
+        memory_mb = res_dict.get("memory_mb", 0.0)
+        db_conns = res_dict.get("db_conns", 0.0)
+        threads = res_dict.get("threads", 0.0)
+        queue_depth = res_dict.get("queue_depth", 0.0)
+        cpu_pct = res_dict.get("cpu_pct", 0.0)
 
         live_context["live_metrics"] = {
             "service": service,
@@ -64,30 +84,17 @@ async def _gather_live_context(active_incident: dict = None, incident_context: d
             "cpu_percent": round(cpu_pct, 2),
         }
 
-        # Get live service health
-        health = await _get_service_health(service)
-        live_context["service_health"] = health
+        live_context["service_health"] = res_dict.get("health", {})
+        live_context["recent_logs"] = res_dict.get("recent_logs", [])
+        live_context["active_alerts"] = res_dict.get("active_alerts", [])
+        live_context["recent_traces"] = res_dict.get("recent_traces", [])
 
-        # Get fresh logs, alerts, traces
-        live_context["recent_logs"] = await get_logs(service=service, time_range_minutes=5, limit=10)
-        live_context["active_alerts"] = await get_alerts(time_range_minutes=15)
-        live_context["recent_traces"] = await get_traces(service=service, time_range_minutes=5, limit=5)
-
-        # Also get cross-service metrics for dependency analysis
         cross_service_metrics = {}
-        for svc in ["auth-service", "checkout-service", "recommendation-service", "payment-service"]:
+        for svc in cross_services:
             if svc != service:
-                svc_err = await _prom_query(
-                    f'sum(rate(http_requests_total{{service="{svc}",status=~"5.."}}[1m])) '
-                    f'/ sum(rate(http_requests_total{{service="{svc}"}}[1m])) * 100'
-                )
-                svc_lat = await _prom_query(
-                    f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket'
-                    f'{{service="{svc}"}}[1m])) by (le)) * 1000'
-                )
                 cross_service_metrics[svc] = {
-                    "error_rate_pct": round(svc_err, 2),
-                    "p95_latency_ms": round(svc_lat, 2),
+                    "error_rate_pct": round(res_dict.get(f"cross_err_{svc}", 0.0), 2),
+                    "p95_latency_ms": round(res_dict.get(f"cross_lat_{svc}", 0.0), 2),
                 }
         live_context["cross_service_metrics"] = cross_service_metrics
 

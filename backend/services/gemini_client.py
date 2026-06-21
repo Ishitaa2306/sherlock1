@@ -2,7 +2,8 @@
 SHERLOCK — Gemini AI Client
 Streaming integration with Google Gemini for real-time RCA.
 """
-import os, json, re
+import os, json, re, asyncio
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 from loguru import logger
 import google.generativeai as genai
@@ -44,14 +45,26 @@ async def stream_analysis(system_prompt: str, user_prompt: str) -> AsyncGenerato
         async for token in _simulate_stream():
             yield token
 
+def _get_chat_model(system_prompt: str):
+    return genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        system_instruction=system_prompt,
+        generation_config={
+            "temperature": 0.3,
+            "max_output_tokens": 4096,
+            "top_p": 0.8,
+            "response_mime_type": "application/json"
+        },
+    )
+
 async def generate_response(system_prompt: str, user_prompt: str) -> str:
     """Generate a complete (non-streaming) Gemini response."""
     if not _configure():
         return _simulate_chat_response(user_prompt)
-    model = _get_model()
     try:
+        model = _get_chat_model(system_prompt)
         response = model.generate_content(
-            [{"role": "user", "parts": [f"{system_prompt}\n\n{user_prompt}"]}]
+            [{"role": "user", "parts": [user_prompt]}]
         )
         return response.text
     except Exception as e:
@@ -128,17 +141,18 @@ The evidence strongly supports this conclusion based on:
 
 def _simulate_chat_response(user_prompt: str = "") -> str:
     """
-    Context-aware fallback chat when Gemini API is unavailable.
-    Parses the rich prompt context to generate realistic, data-driven responses.
+    Highly sophisticated, SRE context-aware fallback chatbot.
+    Simulates a pro-level Senior SRE AI Copilot (SHERLOCK) answering arbitrary questions
+    about simulated services and incident scenarios.
     """
-    # ━━━ Extract context from the enriched prompt ━━━
+    # Extract context details
     service = _extract(r'Service:\s*(\S+)', user_prompt) or "the affected service"
     incident = _extract(r'Title:\s*(.+)', user_prompt) or "the active incident"
     severity = _extract(r'Severity:\s*(\w+)', user_prompt) or "high"
     failure_type = _extract(r'Failure Type:\s*(\w+)', user_prompt) or "unknown"
     description = _extract(r'Description:\s*(.+)', user_prompt) or ""
     
-    # Live metrics
+    # Extract live metrics
     err_rate = _extract_float(r'Error Rate:\s*([\d.]+)%', user_prompt)
     latency = _extract_float(r'P95 Latency:\s*([\d.]+)ms', user_prompt)
     memory = _extract_float(r'Memory Usage:\s*([\d.]+)MB', user_prompt)
@@ -148,85 +162,60 @@ def _simulate_chat_response(user_prompt: str = "") -> str:
     queue = _extract_float(r'Queue Depth:\s*(\d+)', user_prompt)
     cpu = _extract_float(r'CPU Usage:\s*([\d.]+)%', user_prompt)
     
-    # Previous RCA
+    # Extract previous analysis
     root_cause = _extract(r'Root Cause:\s*(.+)', user_prompt) or ""
     imm_fix = _extract(r'Immediate Fix:\s*(.+)', user_prompt) or ""
     
-    # Question
+    # Extract the user's question
     question = _extract(r"Engineer's question:\s*(.+)", user_prompt) or user_prompt[-200:]
     q = question.lower()
 
-    # ━━━ Intent-based response generation ━━━
-    if any(w in q for w in ["cause", "why", "what happened", "root cause", "reason"]):
-        answer = _build_cause_response(service, incident, failure_type, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu, description, root_cause)
-        followups = [
-            f"How severe is this {incident}?",
-            f"What's the blast radius if {service} stays degraded?",
-            f"What immediate steps should we take right now?"
-        ]
-    elif any(w in q for w in ["fix", "mitigate", "resolve", "remediat", "rollback", "restart"]):
-        answer = _build_fix_response(service, incident, failure_type, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu, imm_fix)
-        followups = [
-            f"How do we prevent {incident} from recurring?",
-            f"Should we scale {service} horizontally or vertically?",
-            "What monitoring should we add post-incident?"
-        ]
+    # Identify active scenario based on failure type, service, or question keywords
+    scenario = "general"
+    if failure_type == "database" or service == "auth-service" or any(w in q for w in ["database", "db", "auth", "connection pool", "unindexed"]):
+        scenario = "db_exhaustion"
+    elif failure_type == "resource_exhaustion" or service == "recommendation-service" or any(w in q for w in ["memory", "leak", "cache", "recommendation", "oom"]):
+        scenario = "memory_leak"
+    elif failure_type == "upstream_dependency" or service == "payment-service" or any(w in q for w in ["payment", "timeout", "third-party", "gateway", "thread pool", "resilience"]):
+        scenario = "api_timeout"
+    elif failure_type == "cpu_stress" or service == "checkout-service" or any(w in q for w in ["cpu", "starvation", "loop", "regex", "checkout"]):
+        scenario = "cpu_stress"
+
+    if scenario == "general":
+        desc_l = description.lower()
+        if "index" in desc_l or "database" in desc_l or "auth" in desc_l:
+            scenario = "db_exhaustion"
+        elif "memory" in desc_l or "cache" in desc_l or "oom" in desc_l:
+            scenario = "memory_leak"
+        elif "payment" in desc_l or "timeout" in desc_l or "gateway" in desc_l:
+            scenario = "api_timeout"
+        elif "cpu" in desc_l or "starvation" in desc_l or "loop" in desc_l:
+            scenario = "cpu_stress"
+
+    # Intent routing — greetings first to avoid keyword conflicts
+    if any(w in q for w in ["hello", "hi ", "hey", "who are you", "what is sherlock", "what can you do", "help me"]):
+        answer = "Hello! I am SHERLOCK, your Senior SRE AI Copilot. I have 20+ years of production operations experience. I can assist you with investigating active incidents, diagnosing root causes, recommending mitigations, and auditing query plans or architectural patterns. Ask me anything about the simulated microservices!"
+        followups = ["What caused the active incident?", "What are the live metrics?", "Who should be paged for this?"]
+    elif any(w in q for w in ["cause", "why", "what happened", "root cause", "reason"]):
+        answer, followups = _get_cause_intent(scenario, service, incident, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu, description, root_cause)
+    elif any(w in q for w in ["fix", "mitigate", "resolve", "remediat", "rollback", "restart", "runbook"]):
+        answer, followups = _get_fix_intent(scenario, service, incident, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu, imm_fix)
     elif any(w in q for w in ["prevent", "long term", "future", "recur", "avoid"]):
-        answer = _build_prevention_response(service, incident, failure_type, err_rate, db_conns, memory, threads)
-        followups = [
-            "What SLOs should we define for this service?",
-            f"Should we add circuit breakers to {service}?",
-            "What runbook changes should we make?"
-        ]
-    elif any(w in q for w in ["severe", "severity", "critical", "how bad", "impact", "sla"]):
-        answer = _build_severity_response(service, incident, severity, err_rate, latency, memory, db_conns, db_max, threads, cpu)
-        followups = [
-            f"Can this spread to other services?",
-            f"What's the customer-facing impact right now?",
-            f"How do we fix {incident}?"
-        ]
-    elif any(w in q for w in ["spread", "cascade", "depend", "downstream", "upstream", "other service", "blast radius"]):
-        answer = _build_dependency_response(service, incident, failure_type, user_prompt)
-        followups = [
-            f"Which team should handle {incident}?",
-            f"Should we enable circuit breakers?",
-            "What's the priority order for fixing affected services?"
-        ]
+        answer, followups = _get_prevent_intent(scenario, service, incident)
     elif any(w in q for w in ["team", "who", "page", "oncall", "escalat", "notify"]):
-        answer = _build_team_response(service, incident, failure_type, severity)
-        followups = [
-            f"What's the recommended fix for {incident}?",
-            "Should we declare a formal incident?",
-            f"What's the current error rate on {service}?"
-        ]
-    elif any(w in q for w in ["metric", "monitor", "observ", "dashboard", "grafana", "prometheus"]):
-        answer = _build_metrics_response(service, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu)
-        followups = [
-            "What thresholds should trigger alerts?",
-            f"Is {service} recovering or getting worse?",
-            "What Grafana panels should we watch?"
-        ]
+        answer, followups = _get_team_intent(scenario, service, incident, severity)
+    elif any(w in q for w in ["metric", "monitor", "observ", "dashboard", "grafana", "prometheus", "values", "cpu usage", "memory usage"]):
+        answer, followups = _get_metrics_intent(scenario, service, err_rate, latency, memory, db_conns, db_max, threads, queue, cpu)
     elif any(w in q for w in ["log", "error message", "stack trace", "exception"]):
-        answer = _build_logs_response(service, failure_type, user_prompt)
-        followups = [
-            f"What caused the errors in {service}?",
-            "Are there any correlated deployment events?",
-            "Should we increase log verbosity?"
-        ]
+        answer, followups = _get_logs_intent(scenario, service)
     elif any(w in q for w in ["timeline", "when", "sequence", "chronolog", "order of events"]):
-        answer = _build_timeline_response(service, incident, failure_type, err_rate, latency, db_conns, memory)
-        followups = [
-            "What was the triggering event?",
-            f"How long has {service} been degraded?",
-            "Was there a deployment before this started?"
-        ]
+        answer, followups = _get_timeline_intent(scenario, service, incident, err_rate, latency, db_conns, memory)
+    elif any(w in q for w in ["spread", "cascade", "depend", "downstream", "upstream", "other service", "blast radius", "impact"]):
+        answer, followups = _get_dependency_intent(scenario, service, incident, user_prompt)
+    elif any(w in q for w in ["query", "sql", "select"]):
+        answer, followups = _get_query_intent(scenario, service)
     else:
-        answer = _build_general_response(service, incident, failure_type, err_rate, latency, memory, db_conns, threads, cpu, severity)
-        followups = [
-            f"What caused {incident}?",
-            f"How do we fix {service}?",
-            f"How severe is this incident?"
-        ]
+        answer, followups = _get_general_intent(scenario, service, incident, err_rate, latency, memory, db_conns, threads, cpu, severity)
 
     return json.dumps({"answer": answer, "suggested_followups": followups})
 
@@ -234,6 +223,7 @@ def _simulate_chat_response(user_prompt: str = "") -> str:
 def _extract(pattern: str, text: str) -> str:
     m = re.search(pattern, text)
     return m.group(1).strip() if m else ""
+
 
 def _extract_float(pattern: str, text: str) -> float:
     m = re.search(pattern, text)
@@ -243,165 +233,412 @@ def _extract_float(pattern: str, text: str) -> float:
         return 0.0
 
 
-def _build_cause_response(service, incident, ft, err, lat, mem, db, db_max, thr, q, cpu, desc, rca):
+def _get_cause_intent(scenario, service, incident, err, lat, mem, db, db_max, thr, q, cpu, desc, rca):
     if rca:
-        return f"Based on my previous analysis, the root cause of '{incident}' is: {rca}\n\nLooking at the current live metrics — {service} is showing an error rate of {err}%, P95 latency at {lat}ms, and DB connections at {int(db)}/{int(db_max)}. {desc}"
-    parts = [f"Analyzing the telemetry for {service}, here's what I see:\n"]
-    if ft == "database" and db >= 20:
-        parts.append(f"The database connection pool is critically saturated at {int(db)}/{int(db_max)} active connections. This indicates unindexed queries or connection leaks are holding connections open far too long, causing new requests to queue and timeout. The error rate has climbed to {err}% and P95 latency spiked to {lat}ms as a direct result.")
-    elif ft == "resource_exhaustion" and mem > 100:
-        parts.append(f"Memory consumption on {service} has grown to {mem:.0f}MB, indicating a memory leak. Without a cache eviction policy, the container will eventually hit OOM limits. Current error rate: {err}%, latency: {lat}ms.")
-    elif ft == "upstream_dependency" and thr >= 10:
-        parts.append(f"The thread pool on {service} is at {int(thr)}/16 with a queue depth of {int(q)}. This pattern indicates an upstream dependency (likely a third-party API) has become unresponsive, causing retries to exhaust the thread pool. P95 latency: {lat}ms.")
-    elif ft == "cpu_stress" and cpu > 70:
-        parts.append(f"CPU utilization on {service} is at {cpu}%. This indicates either a compute-intensive loop, thread lock, or resource contention. Error rate: {err}%, latency: {lat}ms.")
+        return f"Based on my SRE analysis, the root cause of this incident is: **{rca}**.\n\nLooking at the telemetry snapshots, the primary service `{service}` is exhibiting issues. {desc}", [
+            f"How do we mitigate this {service} incident immediately?",
+            "What is the recommended long-term prevention plan?",
+            "Show me the reconstructed timeline of events."
+        ]
+        
+    if scenario == "db_exhaustion":
+        return (
+            "The root cause is a **database connection pool exhaustion** on `auth-service` (currently utilizing "
+            f"{int(db)}/{int(db_max)} connections). A recent deployment (v2.3.1) introduced a user lookup query "
+            "`SELECT * FROM user_sessions WHERE created_at > ...` without a database index on the `created_at` column. "
+            "This causes full-table scans that run 60x slower, holding db connections open too long, saturating the pool, "
+            "and cascading failures to `checkout-service` via upstream 503 errors.",
+            ["How do we fix this database connection saturation?", "What index should we add to resolve this permanently?", "Can you show me the problematic SQL query?"]
+        )
+    elif scenario == "memory_leak":
+        return (
+            "The root cause is an **unbounded cache memory leak** in the `recommendation-service` (currently consuming "
+            f"{mem:.1f}MB memory). A feature flag (`enable_recommendation_cache`) was recently toggled ON. The cache "
+            "stores recommended items in-memory but has no eviction policy (like LRU) or maximum bounds, causing memory "
+            "to grow continuously until the container triggers an Out Of Memory (OOM) crash and enters CrashLoopBackOff.",
+            ["How can we mitigate the memory leak right now?", "What eviction policy should we implement in the cache?", "Show me the logs for recommendation-service."]
+        )
+    elif scenario == "api_timeout":
+        return (
+            "The root cause is an **unresponsive third-party payment gateway API** causing thread pool starvation in the "
+            f"`payment-service` (currently utilizing {int(thr)}/16 threads and queue depth {int(q)}). Because there is no "
+            "client-side circuit breaker or request timeout configured, calls block indefinitely (up to 30 seconds). "
+            "This rapidly consumes all threads and blocks subsequent checkout payments.",
+            ["How do we trip the circuit breaker to mitigate this?", "What client timeout budget should we configure?", "What is the team responsible for payment integrations?"]
+        )
+    elif scenario == "cpu_stress":
+        return (
+            "The root cause is **CPU starvation** on `checkout-service` (currently running at "
+            f"{cpu:.1f}% CPU utilization). A recent update introduced an infinite loop or a high-complexity regular "
+            "expression while parsing incoming checkout request payloads. This consumes all available core cycles, "
+            "blocking the event loop and causing service health checks to fail with 504 Gateway Timeouts.",
+            ["How do we horizontally scale checkout-service to mitigate this?", "What is the immediate runbook mitigation?", "How can we prevent CPU starvation in the future?"]
+        )
     else:
-        parts.append(f"Error rate: {err}%, P95 latency: {lat}ms, memory: {mem:.0f}MB, DB connections: {int(db)}/{int(db_max)}, threads: {int(thr)}/16. The primary anomaly appears to be {'high error rates' if err > 10 else 'latency degradation' if lat > 500 else 'resource pressure'}.")
-    return " ".join(parts)
+        return (
+            f"Analyzing telemetry for `{service}`: we see an error rate of {err}%, P95 latency of {lat}ms, memory "
+            f"usage of {mem:.1f}MB, and CPU utilization of {cpu:.1f}%. The primary anomaly appears to be "
+            f"{'high error rates' if err > 5 else 'latency degradation' if lat > 500 else 'resource utilization pressure'}.",
+            ["What immediate actions can we take?", "What team owns this service?", "Show me the live metrics panel."]
+        )
 
 
-def _build_fix_response(service, incident, ft, err, lat, mem, db, db_max, thr, q, cpu, imm_fix):
+def _get_fix_intent(scenario, service, incident, err, lat, mem, db, db_max, thr, q, cpu, imm_fix):
     if imm_fix and len(imm_fix) > 20:
-        return f"Based on the investigation, here are the recommended steps for '{incident}':\n\n{imm_fix}\n\nCurrent state — {service}: error_rate={err}%, latency={lat}ms, db_connections={int(db)}/{int(db_max)}."
-    
-    if ft == "database":
-        return f"To fix the database connection exhaustion on {service} (currently {int(db)}/{int(db_max)} connections):\n\n1. **Immediate**: Kill long-running queries: `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE duration > interval '5 seconds';`\n2. **Rollback**: Revert to the previous deployment version to remove the problematic query\n3. **Restart**: `kubectl rollout restart deployment/{service}` to reset the connection pool\n4. **Verify**: Monitor error rate (currently {err}%) — it should drop below 1% within 2 minutes\n5. **Scale**: If connections remain high, increase `max_pool_size` from {int(db_max)} to 50"
-    elif ft == "resource_exhaustion":
-        return f"To address the memory leak on {service} (currently at {mem:.0f}MB):\n\n1. **Immediate**: Restart affected pods: `kubectl rollout restart deployment/{service}`\n2. **Monitor**: Watch memory growth pattern — if it returns, the leak is in application code\n3. **Add limits**: Set memory limits in the deployment spec: `resources.limits.memory: 512Mi`\n4. **Profile**: Enable heap profiling to identify the leaking allocation\n5. **Verify**: Error rate should normalize from {err}% after restart"
-    elif ft == "upstream_dependency":
-        return f"To mitigate the upstream API timeout affecting {service} (threads: {int(thr)}/16, queue: {int(q)}):\n\n1. **Circuit Breaker**: Enable circuit breaker to stop retries: set state to OPEN\n2. **Timeout Reduction**: Reduce upstream call timeout from 30s to 5s\n3. **Fallback**: Enable graceful degradation / cached responses\n4. **Scale**: Add more instances to handle the backlog\n5. **Verify**: P95 latency (currently {lat}ms) should drop to baseline ~30ms"
-    elif ft == "cpu_stress":
-        return f"To resolve CPU starvation on {service} (CPU: {cpu}%):\n\n1. **Immediate**: Scale horizontally: `kubectl scale deployment/{service} --replicas=4`\n2. **Identify**: Check for infinite loops or lock contention in recent deployments\n3. **Resource Limits**: Ensure CPU limits are set: `resources.limits.cpu: 1000m`\n4. **Restart**: `kubectl rollout restart deployment/{service}`\n5. **Verify**: CPU should normalize below 50%, error rate drop from {err}%"
+        return f"Based on the SRE playbook for '{incident}', here is the mitigation plan:\n\n{imm_fix}", [
+            "How do we prevent this from happening again?",
+            "Who is the on-call team for this service?",
+            "What does the dependency blast radius look like?"
+        ]
+        
+    if scenario == "db_exhaustion":
+        return (
+            "To mitigate the database connection exhaustion on `auth-service`:\n\n"
+            "1. **Immediate Rollback**: Revert `auth-service` deployment to the previous stable version (v2.3.0) to remove the unindexed query.\n"
+            "2. **Kill Slow Queries**: Execute this SQL query on your database admin panel to release saturated connections:\n"
+            "   ```sql\n   SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE duration > interval '5 seconds';\n   ```\n"
+            "3. **Restart Service**: Restart auth-service instances to clear any leaked connections: `kubectl rollout restart deployment/auth-service`\n"
+            "4. **Verify**: Ensure database connections (currently at " + str(int(db)) + "/" + str(int(db_max)) + ") return below 5.",
+            ["What index should we add to prevent this permanently?", "Can you show me the SQL query that caused this?", "Who should be paged to audit this query?"]
+        )
+    elif scenario == "memory_leak":
+        return (
+            "To mitigate the recommendation-service memory leak (currently at " + f"{mem:.1f}" + "MB):\n\n"
+            "1. **Disable Feature Flag**: Toggle the `enable_recommendation_cache` feature flag to `false` in Consul or your application configuration.\n"
+            "2. **Force Restart**: Restart the service container to reclaim memory and break the CrashLoopBackOff:\n"
+            "   ```bash\n   kubectl rollout restart deployment/recommendation-service\n   ```\n"
+            "3. **Monitor**: Confirm memory usage normalizes below 150MB after restart.",
+            ["How do we implement cache eviction to prevent OOMs?", "Show me the logs for recommendation-service.", "What team owns recommendation-service?"]
+        )
+    elif scenario == "api_timeout":
+        return (
+            "To mitigate the payment-service thread pool saturation:\n\n"
+            "1. **Trip Circuit Breaker**: Manually change the payment gateway circuit breaker state to **OPEN** to immediately reject external calls with fallback cached responses:\n"
+            "   ```bash\n   curl -X POST http://localhost:8004/chaos/circuit-breaker/open\n   ```\n"
+            "2. **Reduce client timeouts**: Set the HTTP client timeout for the gateway from 30s to 5s.\n"
+            "3. **Scale Instances**: Horizontally scale payment-service: `kubectl scale deployment/payment-service --replicas=3` to process queued requests.",
+            ["What is the permanent prevention plan?", "What telemetry alerts should we add?", "Show me the active alerts on payment-service."]
+        )
+    elif scenario == "cpu_stress":
+        return (
+            "To mitigate the checkout-service CPU starvation (currently at " + f"{cpu:.1f}" + "%):\n\n"
+            "1. **Scale Horizontally**: Scale up replicas to distribute CPU load: `kubectl scale deployment/checkout-service --replicas=4`\n"
+            "2. **Force Restart**: Terminate locked threads: `kubectl rollout restart deployment/checkout-service`\n"
+            "3. **Profile Hot Path**: Capture a CPU profile using `py-spy` or a local debugger to pinpoint the regular expression or infinite loop in payload parsing.",
+            ["How do we set container resource limits to prevent this?", "Show me the timeline of events for checkout-service.", "Who should be notified?"]
+        )
     else:
-        return f"For '{incident}' on {service}, I recommend:\n\n1. Rollback the most recent deployment\n2. Restart the service pods to clear any leaked state\n3. Monitor error rate (currently {err}%) and latency ({lat}ms)\n4. Scale up if load is the contributing factor\n5. Review logs for the specific failure pattern"
+        return (
+            f"For general mitigation on `{service}`:\n\n"
+            "1. Rollback the most recent deployment.\n"
+            f"2. Restart service container: `kubectl rollout restart deployment/{service}`\n"
+            "3. Scale up replicas if load is elevated.\n"
+            "4. Verify metrics stabilize.",
+            ["What metrics should we check?", "What alerts are active?", "Can you show me the logs?"]
+        )
 
 
-def _build_prevention_response(service, incident, ft, err, db, mem, thr):
-    base = f"To prevent '{incident}' from recurring on {service}:\n\n"
-    if ft == "database":
-        return base + "1. **Query Review**: Add mandatory EXPLAIN ANALYZE checks in CI/CD for any new database queries\n2. **Connection Pool Monitoring**: Set up alerts at 60% pool utilization (15/25) — don't wait for saturation\n3. **Index Auditing**: Run weekly index usage analysis and add missing indexes proactively\n4. **Circuit Breakers**: Implement circuit breakers between services dependent on auth\n5. **Connection Timeouts**: Set aggressive idle connection timeouts (30s) to reclaim leaked connections\n6. **Load Testing**: Add database-focused load tests to the deployment pipeline"
-    elif ft == "resource_exhaustion":
-        return base + f"1. **Memory Limits**: Set hard container memory limits with OOM policies\n2. **Cache Eviction**: Implement LRU cache eviction policies — current memory is {mem:.0f}MB with no eviction\n3. **Profiling**: Enable continuous memory profiling in staging environments\n4. **Canary Deployments**: Use canary releases to catch memory leaks before full rollout\n5. **Alerting**: Set memory growth rate alerts (delta > 50MB/hour)"
-    elif ft == "upstream_dependency":
-        return base + f"1. **Circuit Breakers**: Implement Hystrix/resilience4j circuit breakers with sensible timeouts\n2. **Bulkheads**: Isolate thread pools per upstream dependency\n3. **Fallback Responses**: Design graceful degradation paths for each external dependency\n4. **Timeout Budgets**: Implement deadline propagation across service calls\n5. **Dependency SLAs**: Negotiate and monitor SLAs with third-party providers"
+def _get_prevent_intent(scenario, service, incident):
+    if scenario == "db_exhaustion":
+        return (
+            "To prevent database pool exhaustion in the future:\n\n"
+            "1. **Query Indexing**: Add a database index on the lookup column:\n"
+            "   ```sql\n   CREATE INDEX idx_sessions_created_at ON user_sessions(created_at);\n   ```\n"
+            "2. **CI/CD Checks**: Integrate automated `EXPLAIN ANALYZE` audits in your CI/CD pipeline to reject PRs introducing full-table scans.\n"
+            "3. **Observability**: Add Prometheus alerts at 60% pool utilization (15/25 active connections) rather than waiting for 100% saturation.\n"
+            "4. **Query Timeouts**: Enforce a strict query execution timeout (e.g. 5 seconds) at the DB pool configuration level.",
+            ["What is the immediate mitigation plan?", "Who team owns database configurations?", "Show me the problematic query."]
+        )
+    elif scenario == "memory_leak":
+        return (
+            "To prevent memory leaks in recommendation-service cache:\n\n"
+            "1. **LRU Eviction**: Replace the unbounded cache with a size-limited cache utilizing LRU eviction. For example, in Python:\n"
+            "   ```python\n   from cachetools import LRUCache\n   cache = LRUCache(maxsize=1000)\n   ```\n"
+            "2. **Container Limits**: Enforce strict Docker memory limits in deployment yaml:\n"
+            "   ```yaml\n   resources:\n     limits:\n       memory: 512Mi\n   ```\n"
+            "3. **Heap Profiling**: Run weekly memory leak detection in staging using automated memory profiling.",
+            ["How do we fix the memory leak right now?", "Show me the logs for recommendation-service.", "How severe is this OOM risk?"]
+        )
+    elif scenario == "api_timeout":
+        return (
+            "To prevent third-party timeouts from exhausting thread pools:\n\n"
+            "1. **Circuit Breaker Pattern**: Configure an automated circuit breaker (e.g. Resilience4j) that trips when error rate/timeout rate exceeds 20% over a sliding window.\n"
+            "2. **Timeout Budgets**: Implement deadline propagation across microservices. If checkout has a 5s limit, downstream payment calls must time out in 2s.\n"
+            "3. **Bulkhead Isolation**: Separate the thread pools used for third-party calls from critical checkout processing threads.",
+            ["How do we manually open the circuit breaker?", "Show me the logs for payment-service.", "What alerts are active?"]
+        )
+    elif scenario == "cpu_stress":
+        return (
+            "To prevent infinite loops and regex CPU stress:\n\n"
+            "1. **CPU Limits**: Restrict CPU cycles per container to ensure a single malfunctioning service does not starve the node:\n"
+            "   ```yaml\n   resources:\n     limits:\n       cpu: 1000m\n   ```\n"
+            "2. **Static Analysis**: Integrate static analysis checks in CI/CD (e.g. SonarQube) to identify regex backtracking issues or unbounded loops.\n"
+            "3. **Loop Watchdogs**: Implement event-loop blocking warning alerts in application runtimes.",
+            ["How do we mitigate CPU stress immediately?", "Show me the timeline of events.", "Who team should audit this?"]
+        )
     else:
-        return base + "1. Implement comprehensive health checks and readiness probes\n2. Add auto-scaling policies based on error rate and latency thresholds\n3. Improve observability with distributed tracing and structured logging\n4. Conduct regular chaos engineering exercises\n5. Create and maintain incident runbooks for each failure mode"
+        return (
+            "To prevent service degradation in the future:\n\n"
+            "1. Configure resource requests and limits in Kubernetes.\n"
+            "2. Set up auto-scaling policies based on CPU and request latency.\n"
+            "3. Enforce code reviews for cache implementations and database queries.",
+            ["What metrics should we set alerts for?", "How do we check service health?"]
+        )
 
 
-def _build_severity_response(service, incident, sev, err, lat, mem, db, db_max, thr, cpu):
-    severity_label = sev.upper() if sev else "HIGH"
-    reasons = []
-    if err > 20:
-        reasons.append(f"error rate at {err}% (5x above the 5% warning threshold)")
-    elif err > 5:
-        reasons.append(f"error rate at {err}% (above the 5% warning threshold)")
-    if lat > 2000:
-        reasons.append(f"P95 latency at {lat}ms (4x above the 500ms SLO)")
-    elif lat > 500:
-        reasons.append(f"P95 latency at {lat}ms (above the 500ms SLO)")
-    if db >= 22:
-        reasons.append(f"DB connections at {int(db)}/{int(db_max)} (critical saturation)")
-    if mem > 350:
-        reasons.append(f"memory at {mem:.0f}MB (OOM risk)")
-    if cpu > 90:
-        reasons.append(f"CPU at {cpu}% (starvation)")
+def _get_team_intent(scenario, service, incident, severity):
+    escalation = "This is a SEV1/P1 incident. Page the team immediately via PagerDuty and open an incident bridge call." if severity.lower() == "critical" else "This is a SEV2/P2 incident. Notify the team on Slack and schedule a review."
     
-    reason_text = ", ".join(reasons) if reasons else f"anomalous metric values on {service}"
-    return f"This incident is classified as **{severity_label}** because {reason_text}. The combination of these metrics indicates {'active service degradation with customer impact' if sev == 'critical' else 'service instability requiring prompt attention'}. {'Cascading failures to dependent services are likely if not addressed within minutes.' if sev == 'critical' else 'Continued monitoring is required to prevent escalation.'}"
+    if scenario == "db_exhaustion":
+        return (
+            f"The primary responder team is the **Database / DBA Team** + **Core Backend Team**.\n\n"
+            "They own the database connection pool configuration, query optimization, and schema indexing. "
+            f"Page them immediately regarding auth-service database pool saturation.\n\n**Escalation**: {escalation}",
+            ["How do we mitigate this database exhaustion?", "Can you show me the SQL query?", "Show me the timeline of events."]
+        )
+    elif scenario == "memory_leak":
+        return (
+            f"The primary responder team is the **Backend Engineering Team** (specifically the Recommendations sub-team).\n\n"
+            "Memory leaks typically stem from application-level caching, feature flag configs, or object references. "
+            f"They need to investigate the cache feature flag enabled in the latest build.\n\n**Escalation**: {escalation}",
+            ["How do we mitigate the memory leak right now?", "Show me the logs for recommendation-service.", "What is the long-term prevention?"]
+        )
+    elif scenario == "api_timeout":
+        return (
+            f"The primary responder team is the **Infrastructure / Platform Engineering Team**.\n\n"
+            "They own circuit breaker configurations, service mesh timeout budgets, and payment gateway proxy integrations. "
+            f"They should coordinate with the payment provider to verify external API availability.\n\n**Escalation**: {escalation}",
+            ["How do we open the circuit breaker manually?", "Show me the active alerts on payment-service.", "What is the prevention plan?"]
+        )
+    elif scenario == "cpu_stress":
+        return (
+            f"The primary responder team is the **Checkout Team** + **SRE Team**.\n\n"
+            "They should investigate recent deployment modifications to the checkout parsing module. "
+            f"The SRE team can help configure horizontal scaling and resource limits.\n\n**Escalation**: {escalation}",
+            ["How do we horizontally scale checkout-service?", "What immediate fixes can we try?", "Show me the timeline."]
+        )
+    else:
+        return (
+            f"The primary responder team is the **SRE / On-Call Team**.\n\n"
+            f"They should triages the initial telemetry and escalate to the appropriate service owners.\n\n**Escalation**: {escalation}",
+            ["What caused the active incident?", "Show me the live metrics panel."]
+        )
 
 
-def _build_dependency_response(service, incident, ft, prompt):
-    # Extract cross-service metrics from prompt
+def _get_metrics_intent(scenario, service, err, lat, mem, db, db_max, thr, q, cpu):
+    status_lines = []
+    status_lines.append(f"📊 **Error Rate**: {err:.2f}% {'🔴 CRITICAL' if err > 20 else '🟡 WARNING' if err > 5 else '🟢 Normal'}")
+    status_lines.append(f"⏱️ **P95 Latency**: {lat:.2f}ms {'🔴 CRITICAL' if lat > 2000 else '🟡 WARNING' if lat > 500 else '🟢 Normal'}")
+    status_lines.append(f"💾 **Memory**: {mem:.1f}MB {'🔴 CRITICAL' if mem > 350 else '🟡 WARNING' if mem > 150 else '🟢 Normal'}")
+    status_lines.append(f"🗄️ **DB Connections**: {int(db)}/{int(db_max)} active {'🔴 CRITICAL' if db >= 22 else '🟡 WARNING' if db >= 15 else '🟢 Normal'}")
+    status_lines.append(f"🧵 **Thread Pool**: {int(thr)}/16 active {'🔴 CRITICAL' if thr >= 14 else '🟡 WARNING' if thr >= 10 else '🟢 Normal'}")
+    status_lines.append(f"📬 **Queue Depth**: {int(q)} {'🔴 CRITICAL' if q >= 200 else '🟡 WARNING' if q >= 50 else '🟢 Normal'}")
+    status_lines.append(f"🖥️ **CPU**: {cpu:.1f}% {'🔴 CRITICAL' if cpu > 90 else '🟡 WARNING' if cpu > 70 else '🟢 Normal'}")
+    
+    dashboard = f"Here is the live metrics dashboard for **{service}**:\n\n" + "\n".join(status_lines) + f"\n\nFor real-time visual charts, check the Grafana incident dashboard at http://localhost:3001/d/sherlock."
+    return dashboard, [
+        "What caused this metrics anomaly?",
+        "What is the recommended runbook fix?",
+        "Who team owns this service?"
+    ]
+
+
+def _get_logs_intent(scenario, service):
+    now_str = datetime.now(timezone.utc).isoformat()
+    if scenario == "db_exhaustion":
+        logs = [
+            f"[{now_str}] [ERROR] [auth-service] DB connection pool exhausted. 25/25 connections in use.",
+            f"[{now_str}] [WARN] [auth-service] Slow query detected (8400ms): SELECT * FROM user_sessions WHERE created_at > ...",
+            f"[{now_str}] [ERROR] [checkout-service] POST /checkout/submit failed: auth-service returned 503 (Service Unavailable)"
+        ]
+    elif scenario == "memory_leak":
+        logs = [
+            f"[{now_str}] [CRITICAL] [recommendation-service] Memory usage critical: {358.4:.1f}MB (95% limit reached). No cache eviction active.",
+            f"[{now_str}] [INFO] [recommendation-service] RecommendationCache size: 142050 entries, memory leaked.",
+            f"[{now_str}] [SYSTEM] [recommendation-service] Container recommendation-service OOMKilled."
+        ]
+    elif scenario == "api_timeout":
+        logs = [
+            f"[{now_str}] [ERROR] [payment-service] Upstream payment gateway timeout (30s) on charge validation.",
+            f"[{now_str}] [WARN] [payment-service] Thread pool saturated: 16/16 active. Queue depth climbing.",
+            f"[{now_str}] [ERROR] [checkout-service] POST /checkout/submit timed out after 30000ms. upstream payment-service blocked."
+        ]
+    elif scenario == "cpu_stress":
+        logs = [
+            f"[{now_str}] [CRITICAL] [checkout-service] CPU utilization at 100.0%. Event loop lag: 5200ms.",
+            f"[{now_str}] [WARN] [checkout-service] Health check timed out. Thread blocked on payload regex parsing.",
+            f"[{now_str}] [ERROR] [nginx] 504 Gateway Timeout on POST /api/checkout/submit"
+        ]
+    else:
+        logs = [
+            f"[{now_str}] [INFO] [{service}] System operational.",
+            f"[{now_str}] [INFO] [{service}] Performing routine health checks. 200 OK."
+        ]
+    return f"Here are the most relevant logs for **{service}**:\n\n```log\n" + "\n".join(logs) + "\n```", [
+        "What is the root cause based on these logs?",
+        "What is the recommended fix?",
+        "Show me the metrics dashboard."
+    ]
+
+
+def _get_timeline_intent(scenario, service, incident, err, lat, db, mem):
+    if scenario == "db_exhaustion":
+        events = [
+            "• **T+0min**: Deployment of auth-service v2.3.1 containing unindexed lookup query.",
+            "• **T+2min**: Latency begins climbing as sessions table lookup undergoes full scans.",
+            f"• **T+4min**: Database connection pool hits 20/25 warning capacity (current: {int(db)}/25).",
+            "• **T+6min**: Connections fully saturate at 25/25, new login/checkout requests queue and timeout.",
+            "• **T+8min**: Cascading failures start as checkout-service fails to validate sessions."
+        ]
+    elif scenario == "memory_leak":
+        events = [
+            "• **T+0min**: Unbounded recommendation cache feature flag enabled.",
+            f"• **T+5min**: Cache entries populate rapidly. Memory climbs past 150MB warning threshold.",
+            f"• **T+10min**: Cache memory utilization reaches {mem:.0f}MB. GC cycles spike CPU usage.",
+            "• **T+12min**: Container hits OOM threshold and is terminated by kernel.",
+            "• **T+15min**: Pod enters CrashLoopBackOff as memory leak triggers immediate OOM on restart."
+        ]
+    elif scenario == "api_timeout":
+        events = [
+            "• **T+0min**: Third-party payment provider gateway becomes unresponsive.",
+            "• **T+1min**: Client requests begin waiting on response, consuming worker threads.",
+            "• **T+3min**: Thread pool hits 16/16 limit. Incoming requests queue up.",
+            "• **T+5min**: Queue depth exceeds 200. Checkout-service returns timeouts.",
+            "• **T+7min**: Circuit breaker should trigger, but manual open is required."
+        ]
+    elif scenario == "cpu_stress":
+        events = [
+            "• **T+0min**: Complex payload sent triggering high-backtracking regular expression parsing.",
+            "• **T+1min**: CPU core utilization spikes to 100% on all workers.",
+            "• **T+3min**: Event loop blocks. Checkout-service stops processing new requests.",
+            "• **T+5min**: Kubernetes readiness probes fail. Pod marked as unhealthy."
+        ]
+    else:
+        events = [
+            "• **T+0min**: Anomaly detected in telemetry metrics.",
+            f"• **T+2min**: Error rate spikes to {err}%.",
+            f"• **T+5min**: P95 latency reaches {lat}ms.",
+            "• **T+8min**: SHERLOCK incident engine triggers alert."
+        ]
+    return f"Incident Timeline for **{incident}**:\n\n" + "\n".join(events), [
+        "What is the root cause of this sequence of events?",
+        "How can we mitigate this immediately?",
+        "What prevents this from happening again?"
+    ]
+
+
+def _get_dependency_intent(scenario, service, incident, prompt):
     deps = re.findall(r'(\w+-service): error_rate=([\d.]+)%, p95_latency=([\d.]+)ms', prompt)
     dep_analysis = []
     for dep_svc, dep_err, dep_lat in deps:
         err_f, lat_f = float(dep_err), float(dep_lat)
         if err_f > 5 or lat_f > 500:
-            dep_analysis.append(f"  - **{dep_svc}**: error_rate={dep_err}%, latency={dep_lat}ms — IMPACTED")
+            dep_analysis.append(f"  - **{dep_svc}**: error_rate={dep_err}%, latency={dep_lat}ms — **IMPACTED** (Cascading Failure)")
         else:
             dep_analysis.append(f"  - **{dep_svc}**: error_rate={dep_err}%, latency={dep_lat}ms — healthy")
     
-    dep_text = "\n".join(dep_analysis) if dep_analysis else "  Cross-service metrics not available."
+    dep_text = "\n".join(dep_analysis) if dep_analysis else "  Cross-service telemetry check not available."
     
-    cascade_risk = "HIGH" if ft == "database" and service == "auth-service" else "MODERATE" if ft == "upstream_dependency" else "LOW"
-    
-    return f"Analyzing service dependencies for '{incident}':\n\n{dep_text}\n\n**Cascade Risk: {cascade_risk}**\n\n{'auth-service is a critical dependency — checkout-service and recommendation-service both depend on it for user validation. When auth goes down, all services requiring authentication will fail.' if service == 'auth-service' else f'{service} failure may impact downstream consumers depending on the coupling pattern.'}"
-
-
-def _build_team_response(service, incident, ft, sev):
-    team_map = {
-        "database": ("Database/DBA Team", "They own connection pool configuration, query optimization, and index management. Page the on-call DBA immediately."),
-        "resource_exhaustion": ("Backend Engineering Team", "Memory leaks typically originate in application code. The backend team should review recent deployments and run memory profiling."),
-        "upstream_dependency": ("Infrastructure/Platform Team", "Third-party API timeouts and circuit breaker configuration fall under infrastructure. They can also adjust timeout policies and scaling rules."),
-        "cpu_stress": ("SRE/Platform Team", "CPU starvation requires infrastructure-level investigation. SRE should check for resource contention, noisy neighbors, and scaling policies."),
-        "error_rate": ("Backend Engineering Team + SRE", "Elevated error rates require code-level investigation by backend engineering with SRE support for infrastructure checks."),
-        "latency": ("Backend Engineering + DBA Team", "Latency issues often span code performance and database query optimization."),
-        "service_down": ("SRE/On-Call Team", "Service unavailability is a P0 — SRE on-call should be paged immediately via PagerDuty."),
-    }
-    team, reason = team_map.get(ft, ("SRE Team", "General incident response."))
-    escalation = "This is a P1/SEV1 — page immediately via PagerDuty and open a bridge call." if sev == "critical" else "This is a P2/SEV2 — notify the team via Slack and schedule a review within 30 minutes."
-    return f"For '{incident}' on {service}, the primary response team should be the **{team}**.\n\n{reason}\n\n**Escalation**: {escalation}"
-
-
-def _build_metrics_response(service, err, lat, mem, db, db_max, thr, q, cpu):
-    status_lines = []
-    status_lines.append(f"📊 **Error Rate**: {err}% {'🔴 CRITICAL' if err > 20 else '🟡 WARNING' if err > 5 else '🟢 Normal'}")
-    status_lines.append(f"⏱️ **P95 Latency**: {lat}ms {'🔴 CRITICAL' if lat > 2000 else '🟡 WARNING' if lat > 500 else '🟢 Normal'}")
-    status_lines.append(f"💾 **Memory**: {mem:.0f}MB {'🔴 CRITICAL' if mem > 350 else '🟡 WARNING' if mem > 150 else '🟢 Normal'}")
-    status_lines.append(f"🗄️ **DB Connections**: {int(db)}/{int(db_max)} {'🔴 CRITICAL' if db >= 22 else '🟡 WARNING' if db >= 15 else '🟢 Normal'}")
-    status_lines.append(f"🧵 **Thread Pool**: {int(thr)}/16 {'🔴 CRITICAL' if thr >= 14 else '🟡 WARNING' if thr >= 10 else '🟢 Normal'}")
-    status_lines.append(f"📬 **Queue Depth**: {int(q)} {'🔴 CRITICAL' if q >= 200 else '🟡 WARNING' if q >= 50 else '🟢 Normal'}")
-    status_lines.append(f"🖥️ **CPU**: {cpu}% {'🔴 CRITICAL' if cpu > 90 else '🟡 WARNING' if cpu > 70 else '🟢 Normal'}")
-    return f"Here's the live metrics dashboard for **{service}**:\n\n" + "\n".join(status_lines) + f"\n\nYou can also check Grafana at http://localhost/grafana/ for time-series visualization of these metrics."
-
-
-def _build_logs_response(service, ft, prompt):
-    # Extract log lines from the prompt
-    log_matches = re.findall(r'\[(\w+)\]\s*\[([^\]]+)\]\s*(.+)', prompt)
-    if log_matches:
-        log_lines = [f"  [{level}] {msg.strip()}" for level, svc, msg in log_matches[:6] if svc.strip() == service or service in msg]
-        if not log_lines:
-            log_lines = [f"  [{level}] {msg.strip()}" for level, svc, msg in log_matches[:6]]
-        return f"Here are the most relevant recent log entries for **{service}**:\n\n" + "\n".join(log_lines) + "\n\nThe error-level logs indicate the primary failure pattern. I'd focus on the CRITICAL entries first for root cause analysis."
-    return f"I don't have detailed log entries for {service} in the current context. Try running an investigation first to collect telemetry, or check the container logs directly with: `docker compose logs {service} --tail 50`"
-
-
-def _build_timeline_response(service, incident, ft, err, lat, db, mem):
-    events = []
-    if ft == "database":
-        events = [
-            "T+0min: New deployment pushed with unindexed database query",
-            f"T+2min: P95 latency begins climbing (current: {lat}ms)",
-            f"T+4min: DB connection pool pressure increases ({int(db)}/25)",
-            f"T+6min: Error rate spikes to {err}%",
-            f"T+8min: DB pool fully saturated, cascading failures begin",
-            "T+10min: Critical alert triggered, incident detected by SHERLOCK"
-        ]
-    elif ft == "resource_exhaustion":
-        events = [
-            "T+0min: Memory allocation without corresponding deallocation detected",
-            f"T+5min: Memory grows past warning threshold (current: {mem:.0f}MB)",
-            f"T+10min: Garbage collection pressure increases, latency climbs to {lat}ms",
-            f"T+15min: Error rate reaches {err}% as OOM pressure mounts",
-            "T+20min: SHERLOCK detects anomaly and generates incident"
-        ]
-    elif ft == "upstream_dependency":
-        events = [
-            "T+0min: Upstream third-party API becomes unresponsive",
-            "T+1min: Retry logic kicks in, consuming thread pool resources",
-            f"T+3min: Thread pool saturation, latency spikes to {lat}ms",
-            f"T+5min: Queue backlog grows, error rate hits {err}%",
-            "T+7min: Circuit breaker should have tripped but wasn't configured"
-        ]
+    if scenario == "db_exhaustion":
+        cascade = "**HIGH RISK**\n\n`auth-service` is a critical upstream dependency for `checkout-service` (used for session validation). When `auth-service` connection pool saturates, checkout requests fail immediately. Recommend implementing a bulkhead pattern and mock fallback authentication."
+    elif scenario == "api_timeout":
+        cascade = "**HIGH RISK**\n\n`payment-service` acts as a critical bottleneck for the order placement checkout flow. If payments block, checkout threads are starved. Recommend wrapping payment gateways in circuit breakers."
+    elif scenario == "memory_leak":
+        cascade = "**LOW RISK**\n\n`recommendation-service` failures degrade the user interface (no recommendations shown), but order checkout flows remain functional."
+    elif scenario == "cpu_stress":
+        cascade = "**MODERATE RISK**\n\n`checkout-service` CPU starvation blocks new orders. Downstream services like `payment-service` will see a reduction in call volume, but are not directly degraded."
     else:
-        events = [
-            "T+0min: Initial anomaly detected in service metrics",
-            f"T+2min: Error rate climbs to {err}%",
-            f"T+5min: P95 latency reaches {lat}ms",
-            "T+8min: SHERLOCK anomaly detection triggers incident"
-        ]
-    return f"Reconstructed timeline for '{incident}':\n\n" + "\n".join(events)
+        cascade = f"Degradation of `{service}` may affect downstream consumers depending on API coupling."
+        
+    return f"Dependency & Cascade Risk Analysis:\n\n{dep_text}\n\n**Blast Radius & Coupling**: {cascade}", [
+        "How do we mitigate this blast radius?",
+        "What monitoring alerts can we set up?",
+        "Show me the timeline of events."
+    ]
 
 
-def _build_general_response(service, incident, ft, err, lat, mem, db, thr, cpu, sev):
-    return f"Looking at the current state of **{service}** for '{incident}':\n\n• Error rate: {err}% | P95 latency: {lat}ms\n• Memory: {mem:.0f}MB | DB connections: {int(db)}/25\n• Threads: {int(thr)}/16 | CPU: {cpu}%\n• Severity: {sev.upper()}\n\nThe {'critical' if sev == 'critical' else 'elevated'} metrics indicate {'active service degradation' if err > 10 or lat > 500 else 'early warning signs'}. I'd recommend {'immediate mitigation' if sev == 'critical' else 'close monitoring and investigation'}. What specific aspect would you like me to dig into?"
+def _get_query_intent(scenario, service):
+    if scenario == "db_exhaustion":
+        return (
+            "The query causing the connection exhaustion is executing on the `user_sessions` table:\n"
+            "```sql\n"
+            "SELECT * FROM user_sessions WHERE created_at > NOW() - INTERVAL '30 days' AND status = 'active';\n"
+            "```\n"
+            "**Audit**: Because there is no database index on the `created_at` column, PostgreSQL is forced to perform a "
+            "**Sequential Scan (Seq Scan)** on the entire `user_sessions` table. For large tables, this full table scan takes "
+            "several seconds per query, locking the database connection and exhausting the connection pool of 25 connections.",
+            ["What index should we add to resolve this?", "How do we kill active slow queries?", "Who team should we contact?"]
+        )
+    elif scenario == "memory_leak":
+        return (
+            "The cached object structure causing the memory leak in recommendation-service looks like:\n"
+            "```python\n"
+            "class RecommendationCache:\n"
+            "    def __init__(self):\n"
+            "        self._store = {}  # Unbounded dictionary, memory leak\n"
+            "\n"
+            "    def set(self, user_id, recommendations):\n"
+            "        self._store[user_id] = recommendations  # Grows without limit\n"
+            "```\n"
+            "**Audit**: Since there is no eviction logic or key count limit, the `_store` dictionary grows continuously as user "
+            "recommendations are requested, eventually consuming all memory and triggering OOM.",
+            ["How do we fix this cache memory leak?", "Show me the logs for recommendation-service.", "What prevents this permanently?"]
+        )
+    elif scenario == "cpu_stress":
+        return (
+            "The regular expression causing high CPU backtracking in checkout-service payload validation is:\n"
+            "```python\n"
+            "import re\n"
+            "# Vulnerable regex: exponential backtracking on nested repetitions\n"
+            "CHECKOUT_REGEX = re.compile(r'^([a-zA-Z0-9]+)*$')\n"
+            "```\n"
+            "**Audit**: When parsing long malicious or slightly malformed checkout payload strings, this regular expression "
+            "experiences catastrophic backtracking, causing the regex engine to take exponential time to compute, pinning "
+            "the CPU core to 100%.",
+            ["How do we resolve the CPU stress immediately?", "How do we scale checkout-service horizontally?", "Show me the metrics dashboard."]
+        )
+    else:
+        return (
+            "No specific database queries or code snippets are associated with this service/scenario. Review the latest "
+            "deployment diff to inspect new codebase changes.",
+            ["Show me the metrics dashboard.", "What caused the active incident?"]
+        )
+
+
+def _get_general_intent(scenario, service, incident, err, lat, mem, db, thr, cpu, sev):
+    overview = (
+        f"Looking at the current state of **{service}**:\n\n"
+        f"• **Error Rate**: {err:.2f}% | **P95 Latency**: {lat:.2f}ms\n"
+        f"• **Memory**: {mem:.1f}MB | **DB Connections**: {int(db)}/25 active\n"
+        f"• **Threads**: {int(thr)}/16 active | **CPU**: {cpu:.1f}%\n"
+        f"• **Incident Severity**: {sev.upper()}\n\n"
+    )
+    if scenario == "db_exhaustion":
+        overview += (
+            "This service is experiencing a critical **Database Connection Pool Exhaustion** incident. "
+            "The database pool is saturated due to slow unindexed queries, causing auth validations to fail."
+        )
+        followups = ["What query is causing the DB saturation?", "How do we mitigate this database exhaustion?", "Show me the logs."]
+    elif scenario == "memory_leak":
+        overview += (
+            "This service is experiencing a critical **Memory Leak** due to an unbounded cache. "
+            "Memory usage is growing linearly, putting the container at immediate risk of OOM termination."
+        )
+        followups = ["Why is the memory leaking?", "How do we mitigate the memory leak?", "What prevents this permanently?"]
+    elif scenario == "api_timeout":
+        overview += (
+            "This service is experiencing an **Upstream API Timeout** from a third-party gateway. "
+            "The failure has saturated the worker thread pool, blocking checkout operations."
+        )
+        followups = ["Why is the thread pool saturated?", "How do we trip the circuit breaker?", "Show me the logs."]
+    elif scenario == "cpu_stress":
+        overview += (
+            "This service is experiencing **CPU Starvation** at 100% core usage. "
+            "An infinite loop or regex backtracking in payload parsing has blocked the event loop."
+        )
+        followups = ["What causes the CPU starvation?", "How do we scale the service horizontally?", "Show me the timeline."]
+    else:
+        overview += "All metrics are within nominal limits, and no active anomalies are currently detected."
+        followups = ["What scenarios can I trigger?", "Show me the metrics panel.", "Who is on call?"]
+        
+    return overview, followups

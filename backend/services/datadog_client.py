@@ -7,6 +7,7 @@ import time
 import math
 import uuid
 import httpx
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 from loguru import logger
@@ -37,7 +38,7 @@ async def _fetch_service_health(service: str) -> Dict[str, Any]:
 async def _query_prometheus(promql: str) -> float:
     """Fetch a single instant value from Prometheus, guarding against NaN and Inf."""
     try:
-        async with httpx.AsyncClient(timeout=3) as client:
+        async with httpx.AsyncClient(timeout=0.5) as client:
             r = await client.get(f"{PROM_URL}/api/v1/query", params={"query": promql})
             if r.status_code == 200:
                 data = r.json()
@@ -59,17 +60,20 @@ async def get_logs(service="", time_range_minutes=15, limit=50, query="") -> Lis
     if not service:
         # Collect for all services
         all_logs = []
-        for s in SERVICE_URLS:
-            all_logs.extend(await get_logs(service=s, time_range_minutes=time_range_minutes, limit=12))
+        log_tasks = [get_logs(service=s, time_range_minutes=time_range_minutes, limit=12) for s in SERVICE_URLS]
+        log_results = await asyncio.gather(*log_tasks)
+        for logs_res in log_results:
+            all_logs.extend(logs_res)
         all_logs.sort(key=lambda x: x["timestamp"], reverse=True)
         return all_logs[:limit]
 
-    health = await _fetch_service_health(service)
-    logs = []
+    # Run tasks concurrently
+    health_task = _fetch_service_health(service)
+    err_rate_task = _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
+    latency_p95_task = _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
 
-    # Get service specific Prometheus metrics to ground logs in real values
-    err_rate = await _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
-    latency_p95 = await _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
+    health, err_rate, latency_p95 = await asyncio.gather(health_task, err_rate_task, latency_p95_task)
+    logs = []
 
     # Base operational log
     logs.append({
@@ -181,12 +185,29 @@ async def get_alerts(time_range_minutes=60) -> List[Dict[str, Any]]:
     now = datetime.now(timezone.utc)
     alerts = []
 
-    for svc in SERVICE_URLS:
-        err_rate = await _query_prometheus(f'sum(rate(http_requests_total{{service="{svc}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{svc}"}}[1m])) * 100')
-        latency_p95 = await _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{svc}"}}[1m])) by (le)) * 1000')
-        db_conns = await _query_prometheus(f'db_connections_active{{service="{svc}"}}')
-        mem_mb = await _query_prometheus(f'process_memory_usage_bytes{{service="{svc}"}} / 1024 / 1024')
-        threads = await _query_prometheus(f'thread_pool_active{{service="{svc}"}}')
+    # Prepare all queries
+    queries = []
+    services_list = list(SERVICE_URLS.keys())
+    for svc in services_list:
+        queries.extend([
+            _query_prometheus(f'sum(rate(http_requests_total{{service="{svc}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{svc}"}}[1m])) * 100'),
+            _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{svc}"}}[1m])) by (le)) * 1000'),
+            _query_prometheus(f'db_connections_active{{service="{svc}"}}'),
+            _query_prometheus(f'process_memory_usage_bytes{{service="{svc}"}} / 1024 / 1024'),
+            _query_prometheus(f'thread_pool_active{{service="{svc}"}}')
+        ])
+
+    # Run queries concurrently
+    results = await asyncio.gather(*queries)
+
+    idx = 0
+    for svc in services_list:
+        err_rate = results[idx]
+        latency_p95 = results[idx+1]
+        db_conns = results[idx+2]
+        mem_mb = results[idx+3]
+        threads = results[idx+4]
+        idx += 5
 
         if err_rate > 5.0:
             alerts.append({
@@ -256,8 +277,10 @@ async def get_traces(service="", time_range_minutes=15, limit=20) -> List[Dict[s
     if not service:
         service = "auth-service"
 
-    latency_p95 = await _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
-    err_rate = await _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
+    latency_p95_task = _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
+    err_rate_task = _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
+    
+    latency_p95, err_rate = await asyncio.gather(latency_p95_task, err_rate_task)
 
     traces = []
     operations = {
@@ -286,9 +309,11 @@ async def get_traces(service="", time_range_minutes=15, limit=20) -> List[Dict[s
     return traces
 
 async def get_service_health(service=""):
-    health = await _fetch_service_health(service)
-    err_rate = await _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
-    latency_p95 = await _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
+    health_task = _fetch_service_health(service)
+    err_rate_task = _query_prometheus(f'sum(rate(http_requests_total{{service="{service}",status=~"5.."}}[1m])) / sum(rate(http_requests_total{{service="{service}"}}[1m])) * 100')
+    latency_p95_task = _query_prometheus(f'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{{service="{service}"}}[1m])) by (le)) * 1000')
+
+    health, err_rate, latency_p95 = await asyncio.gather(health_task, err_rate_task, latency_p95_task)
 
     return {
         "service": service,

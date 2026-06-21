@@ -7,6 +7,75 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MessageSquare, Send, Sparkles, User, Bot } from 'lucide-react';
 import { sendChatMessage } from '../services/api';
 
+/**
+ * Lightweight markdown renderer for chat messages.
+ * Handles: **bold**, `inline code`, ```code blocks```, and newlines.
+ */
+function renderMarkdown(text) {
+  if (!text) return null;
+
+  // Split by code blocks first
+  const codeBlockRegex = /```([\s\S]*?)```/g;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+    }
+    // Remove optional language identifier from first line
+    let code = match[1];
+    const firstNewline = code.indexOf('\n');
+    if (firstNewline !== -1 && /^[a-zA-Z]+$/.test(code.slice(0, firstNewline).trim())) {
+      code = code.slice(firstNewline + 1);
+    }
+    parts.push({ type: 'code_block', content: code.trim() });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push({ type: 'text', content: text.slice(lastIndex) });
+  }
+
+  return parts.map((part, idx) => {
+    if (part.type === 'code_block') {
+      return (
+        <pre key={idx} className="bg-black/40 border border-sherlock-border/40 rounded-md p-2.5 my-1.5 overflow-x-auto">
+          <code className="text-[11px] text-emerald-400 font-mono leading-relaxed">{part.content}</code>
+        </pre>
+      );
+    }
+
+    // Process inline markdown: **bold** and `code`
+    const inlineRegex = /(\*\*(.+?)\*\*)|(`([^`]+)`)/g;
+    const segments = [];
+    let inlineLastIndex = 0;
+    let inlineMatch;
+    const raw = part.content;
+
+    while ((inlineMatch = inlineRegex.exec(raw)) !== null) {
+      if (inlineMatch.index > inlineLastIndex) {
+        segments.push(<span key={`t-${idx}-${inlineLastIndex}`}>{raw.slice(inlineLastIndex, inlineMatch.index)}</span>);
+      }
+      if (inlineMatch[2]) {
+        segments.push(<strong key={`b-${idx}-${inlineMatch.index}`} className="text-sherlock-text font-semibold">{inlineMatch[2]}</strong>);
+      } else if (inlineMatch[4]) {
+        segments.push(
+          <code key={`c-${idx}-${inlineMatch.index}`} className="bg-black/30 text-amber-400 px-1 py-0.5 rounded text-[11px] font-mono">
+            {inlineMatch[4]}
+          </code>
+        );
+      }
+      inlineLastIndex = inlineMatch.index + inlineMatch[0].length;
+    }
+    if (inlineLastIndex < raw.length) {
+      segments.push(<span key={`t-${idx}-${inlineLastIndex}`}>{raw.slice(inlineLastIndex)}</span>);
+    }
+
+    return <span key={idx}>{segments}</span>;
+  });
+}
+
 export default function ChatPanel({ incidentContext, analysisResult, activeIncident }) {
   const incidentKey = activeIncident
     ? `${activeIncident.service}_${activeIncident.failure_type}`
@@ -152,7 +221,9 @@ export default function ChatPanel({ incidentContext, analysisResult, activeIncid
                   ? 'bg-sherlock-accent/15 border border-sherlock-accent/20 text-sherlock-text'
                   : 'bg-sherlock-surface/80 border border-sherlock-border text-sherlock-muted'
               }`}>
-                <p className="whitespace-pre-wrap leading-relaxed font-sans text-xs">{msg.content}</p>
+                <div className="whitespace-pre-wrap leading-relaxed font-sans text-xs">
+                  {msg.role === 'assistant' ? renderMarkdown(msg.content) : msg.content}
+                </div>
               </div>
               {msg.role === 'user' && (
                 <div className="w-6 h-6 rounded-full bg-sherlock-accent/20 flex items-center justify-center shrink-0 mt-0.5">
@@ -181,7 +252,7 @@ export default function ChatPanel({ incidentContext, analysisResult, activeIncid
       </div>
 
       {/* Suggestions */}
-      {suggestions.length > 0 && messages.length < 2 && (
+      {suggestions.length > 0 && !loading && (
         <div className="px-3 pb-2">
           <div className="flex flex-wrap gap-1.5">
             {suggestions.slice(0, 3).map((s, i) => (
