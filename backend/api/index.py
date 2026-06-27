@@ -6,17 +6,13 @@ import sys
 import os
 import traceback
 
+# Ensure critical directories are in sys.path for importing app and routes
+for path in ['/var/task', os.path.dirname(os.path.dirname(os.path.abspath(__file__))), os.path.dirname(os.path.abspath(__file__)), os.getcwd()]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
 import_error = None
 try:
-    # Resolve paths carefully
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    
-    # Add paths to sys.path
-    if current_dir not in sys.path:
-        sys.path.insert(0, current_dir)
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
     if os.getcwd() not in sys.path:
         sys.path.insert(0, os.getcwd())
         
