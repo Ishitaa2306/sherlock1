@@ -3,7 +3,7 @@
  * Handles all backend communication.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '' : 'https://backend-iota-lake-45.vercel.app');
 
 export async function fetchScenarios() {
   const res = await fetch(`${API_BASE}/api/scenarios`);
