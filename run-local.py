@@ -136,7 +136,7 @@ print("  Starting FastAPI Backend...")
 be_out = open(os.path.join(logs_dir, "backend.log"), "w")
 be_err = open(os.path.join(logs_dir, "backend.err.log"), "w")
 be_proc = subprocess.Popen(
-    [sys.executable, "-m", "uvicorn", "main:app",
+    [sys.executable, "-m", "uvicorn", "app:app",
      "--host", "0.0.0.0", "--port", "8000"],
     env=backend_env, cwd=backend_dir,
     stdout=be_out, stderr=be_err)
