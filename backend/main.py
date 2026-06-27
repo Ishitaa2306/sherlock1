@@ -10,9 +10,14 @@ from loguru import logger
 
 load_dotenv()
 
-# Configure loguru
-logger.add("logs/sherlock.log", rotation="50 MB", level="DEBUG",
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}")
+# Configure loguru — file logging only if writable (skips on Vercel serverless)
+try:
+    import pathlib
+    pathlib.Path("logs").mkdir(exist_ok=True)
+    logger.add("logs/sherlock.log", rotation="50 MB", level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} | {message}")
+except Exception:
+    pass  # Vercel read-only filesystem — console logging only
 
 app = FastAPI(
     title="SHERLOCK — AI Incident Investigation Platform",
