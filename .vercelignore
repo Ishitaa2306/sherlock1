@@ -9,4 +9,3 @@ venv/
 .git/
 node_modules/
 backend/
-frontend/

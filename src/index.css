@@ -1,161 +1,89 @@
-@import 'tailwindcss/base';
-@import 'tailwindcss/components';
-@import 'tailwindcss/utilities';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-:root {
-  /* Base backgrounds — deep layered darkness */
-  --bg-void: #03050A;
-  --bg-base: #070B12;
-  --bg-surface: #0C1220;
-  --bg-elevated: #111827;
-  --bg-overlay: #16202E;
-  --bg-card: #0F1923;
-  --bg-hover: #162030;
+/* ━━━ SHERLOCK — Global Styles ━━━ */
 
-  /* Primary accent — electric blue */
-  --accent-primary: #0EA5E9;
-  --accent-primary-dim: rgba(14,165,233,0.15);
-  --accent-primary-glow: rgba(14,165,233,0.35);
-
-  /* Secondary accent — violet intelligence */
-  --accent-secondary: #8B5CF6;
-  --accent-secondary-dim: rgba(139,92,246,0.12);
-
-  /* Status colors */
-  --status-critical: #EF4444;
-  --status-critical-dim: rgba(239,68,68,0.12);
-  --status-critical-glow: rgba(239,68,68,0.4);
-  --status-warning: #F59E0B;
-  --status-warning-dim: rgba(245,158,11,0.12);
-  --status-success: #10B981;
-  --status-success-dim: rgba(16,185,129,0.12);
-  --status-info: #06B6D4;
-
-  /* Text hierarchy */
-  --text-primary: #F1F5F9;
-  --text-secondary: #94A3B8;
-  --text-muted: #475569;
-  --text-accent: #38BDF8;
-  --text-code: #7DD3FC;
-
-  /* Borders */
-  --border-subtle: rgba(148,163,184,0.06);
-  --border-default: rgba(148,163,184,0.1);
-  --border-emphasis: rgba(14,165,233,0.3);
-  --border-critical: rgba(239,68,68,0.3);
-
-  /* Gradients */
-  --gradient-blue: linear-gradient(135deg, #0EA5E9 0%, #6366F1 100%);
-  --gradient-critical: linear-gradient(135deg, #EF4444 0%, #EC4899 100%);
-  --gradient-success: linear-gradient(135deg, #10B981 0%, #06B6D4 100%);
-  --gradient-surface: linear-gradient(180deg, #0C1220 0%, #070B12 100%);
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-@layer base {
-  html,
-  body,
-  #root {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    margin: 0;
-    padding: 0;
-  }
-  body {
-    background-color: var(--bg-void);
-    color: var(--text-primary);
-    font-family: 'Inter', sans-serif;
-  }
+body {
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  background: #09090b;
+  color: #f4f4f5;
+  overflow-x: hidden;
 }
 
-/* Custom Active Borders & Glowing Elements */
-.glow-border-cyan {
-  border: 1px solid var(--border-emphasis);
-  box-shadow: 0 0 15px var(--accent-primary-glow), inset 0 0 10px var(--accent-primary-dim);
-}
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #09090b; }
+::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
 
-.glow-border-critical {
-  border: 1px solid var(--border-critical);
-  box-shadow: 0 0 15px var(--status-critical-glow), inset 0 0 10px var(--status-critical-dim);
-}
-
-/* Animated gradient border container */
-@property --border-angle {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
-@keyframes borderRotate {
-  100% {
-    --border-angle: 360deg;
-  }
-}
-
-.animated-glow-border {
+/* Terminal streaming panel */
+.terminal-panel {
+  background: #18181b;
+  border: 1px solid #27272a;
+  font-family: 'JetBrains Mono', monospace;
   position: relative;
-  border-radius: 0.75rem;
-  background: linear-gradient(to right, var(--bg-card), var(--bg-card)) padding-box,
-              linear-gradient(var(--border-angle), var(--accent-primary), var(--accent-secondary), var(--status-success), var(--accent-primary)) border-box;
-  border: 1px solid transparent;
-  animation: borderRotate 4s linear infinite;
+  overflow: hidden;
 }
 
-/* Custom Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Glowing accent border */
+.glow-border {
+  border: 1px solid #27272a;
 }
 
-::-webkit-scrollbar-track {
-  background: var(--bg-base);
+.glow-border-danger {
+  border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--bg-elevated);
-  border-radius: 4px;
+/* Confidence meter */
+.confidence-ring {
+  transition: stroke-dashoffset 1.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--bg-overlay);
+/* Card hover effect */
+.hover-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hover-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(99, 102, 241, 0.05);
+  border-color: rgba(99, 102, 241, 0.3);
 }
 
-/* Terminal Log Animations */
-.terminal-line {
-  animation: blinkAndShow 0.15s ease-out forwards;
+/* Typing cursor */
+.typing-cursor::after {
+  content: '▊';
+  animation: blink 1s step-end infinite;
+  color: #6366f1;
+  margin-left: 2px;
 }
 
-@keyframes blinkAndShow {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Grid background pattern */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(99, 102, 241, 0.01) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.01) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
-/* Base Card Perspective (for 3D tilts) */
-.perspective-container {
-  perspective: 1000px;
-}
+/* Severity colors */
+.severity-critical { color: #ef4444; }
+.severity-high { color: #f59e0b; }
+.severity-medium { color: #3b82f6; }
+.severity-low { color: #06d6a0; }
+.severity-info { color: #94a3b8; }
 
-/* Ambient glow container */
-.ambient-glow-active {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle at 50% 10%, var(--accent-primary-glow) 0%, transparent 60%);
-  opacity: 0.15;
-  transition: opacity 1s ease-in-out;
-}
+.severity-bg-critical { background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.25); }
+.severity-bg-high { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.25); }
+.severity-bg-medium { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.25); }
+.severity-bg-low { background: rgba(6, 214, 160, 0.1); border-color: rgba(6, 214, 160, 0.25); }
 
-.ambient-glow-idle {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: transparent;
-  opacity: 0;
-  transition: opacity 1s ease-in-out;
+@keyframes blink {
+  50% { opacity: 0; }
 }

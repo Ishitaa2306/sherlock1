@@ -70,7 +70,7 @@ else:
 
 # ---- Step 3: npm dependencies ----
 print_yellow("[Step 3/4] Checking npm dependencies...")
-frontend_dir = os.path.join(root_dir, "frontend")
+frontend_dir = root_dir
 if not os.path.exists(os.path.join(frontend_dir, "node_modules")):
     print_yellow("  Installing npm packages for frontend (this may take a minute)...")
     subprocess.run(["npm", "install"], shell=True, cwd=frontend_dir, check=False)
